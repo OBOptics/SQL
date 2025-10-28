@@ -1,0 +1,544 @@
+DROP TABLE IF EXISTS tourism_db.tourism_data;
+
+CREATE EXTERNAL TABLE tourism_db.tourism_data (
+  CustomerID                 STRING,
+  ProdTaken                  STRING,
+  Age                        STRING,
+  TypeofContact              STRING,
+  CityTier                   STRING,
+  DurationOfPitch            STRING,
+  Occupation                 STRING,
+  Gender                     STRING,
+  NumberOfPersonVisiting     STRING,
+  NumberOfFollowups          STRING,
+  ProductPitched             STRING,
+  PreferredPropertyStar      STRING,
+  MaritalStatus              STRING,
+  NumberOfTrips              STRING,
+  Passport                   STRING,
+  PitchSatisfactionScore     STRING,
+  OwnCar                     STRING,
+  NumberOfChildrenVisiting   STRING,
+  Designation                STRING,
+  MonthlyIncome              STRING
+)
+ROW FORMAT SERDE 'org.apache.hadoop.hive.serde2.OpenCSVSerde'
+WITH SERDEPROPERTIES (
+  'separatorChar' = ',',
+  'quoteChar'     = '"',
+  'escapeChar'    = '\\',
+  'serialization.encoding' = 'UTF-8'
+)
+LOCATION 's3://firstbuckoleru/tourism/'
+TBLPROPERTIES ('skip.header.line.count'='1');
+
+
+-- Example: preview with numeric casts
+SELECT
+  TRY_CAST(CustomerID AS BIGINT)                            AS customer_id,
+  TRY_CAST(ProdTaken AS INTEGER)                            AS prod_taken,
+  TRY_CAST(Age AS INTEGER)                                  AS age,
+  TypeofContact,
+  TRY_CAST(CityTier AS INTEGER)                             AS city_tier,
+  TRY_CAST(DurationOfPitch AS INTEGER)                      AS pitch_minutes,
+  Occupation,
+  Gender,
+  TRY_CAST(NumberOfPersonVisiting AS INTEGER)               AS persons_visiting,
+  TRY_CAST(NumberOfFollowups AS INTEGER)                    AS followups,
+  ProductPitched,
+  TRY_CAST(PreferredPropertyStar AS INTEGER)                AS property_star,
+  MaritalStatus,
+  TRY_CAST(NumberOfTrips AS INTEGER)                        AS trips,
+  TRY_CAST(Passport AS INTEGER)                             AS passport,
+  TRY_CAST(PitchSatisfactionScore AS INTEGER)               AS pitch_score,
+  TRY_CAST(OwnCar AS INTEGER)                               AS own_car,
+  TRY_CAST(NumberOfChildrenVisiting AS INTEGER)             AS children_visiting,
+  Designation,
+  TRY_CAST(regexp_replace(MonthlyIncome, '[^0-9\\.-]', '') AS DOUBLE) AS monthly_income
+FROM tourism_db.tourism_data
+LIMIT 50;
+
+-- Show rows where numbers aren't parseable
+SELECT CustomerID, Age, MonthlyIncome
+FROM tourism_db.tourism_data
+WHERE TRY_CAST(Age AS INTEGER) IS NULL AND COALESCE(nullif(trim(Age),''), 'x') <> 'x'
+   OR TRY_CAST(regexp_replace(MonthlyIncome, '[^0-9\\.-]', '') AS DOUBLE) IS NULL
+LIMIT 50;
+
+CREATE TABLE tourism_db.tourism_clean
+WITH (
+  format = 'PARQUET',
+  external_location = 's3://firstbuckoleru/tourism/parquet_clean/'
+) AS
+SELECT
+  TRY_CAST(CustomerID AS BIGINT)                            AS customer_id,
+  TRY_CAST(ProdTaken AS INTEGER)                            AS prod_taken,
+  TRY_CAST(Age AS INTEGER)                                  AS age,
+  TypeofContact                                             AS typeofcontact,
+  TRY_CAST(CityTier AS INTEGER)                             AS city_tier,
+  TRY_CAST(DurationOfPitch AS INTEGER)                      AS duration_of_pitch,
+  Occupation,
+  Gender,
+  TRY_CAST(NumberOfPersonVisiting AS INTEGER)               AS number_of_person_visiting,
+  TRY_CAST(NumberOfFollowups AS INTEGER)                    AS number_of_followups,
+  ProductPitched                                            AS product_pitched,
+  TRY_CAST(PreferredPropertyStar AS INTEGER)                AS preferred_property_star,
+  MaritalStatus                                             AS marital_status,
+  TRY_CAST(NumberOfTrips AS INTEGER)                        AS number_of_trips,
+  TRY_CAST(Passport AS INTEGER)                             AS passport,
+  TRY_CAST(PitchSatisfactionScore AS INTEGER)               AS pitch_satisfaction_score,
+  TRY_CAST(OwnCar AS INTEGER)                               AS own_car,
+  TRY_CAST(NumberOfChildrenVisiting AS INTEGER)             AS number_of_children_visiting,
+  Designation,
+  TRY_CAST(regexp_replace(MonthlyIncome, '[^0-9\\.-]', '') AS DOUBLE) AS monthly_income
+FROM tourism_db.tourism_data;
+
+
+SELECT * FROM tourism_db.tourism_clean LIMIT 10;
+
+SELECT age, customer_id
+FROM tourism_db.tourism_clean;
+
+-- How is age distrubition of our customers
+WITH base AS (
+  SELECT age
+  FROM tourism_db.tourism_clean
+  WHERE age IS NOT NULL
+)
+SELECT
+  CASE
+    WHEN age < 18 THEN '<18'
+    WHEN age BETWEEN 18 AND 24 THEN '18–24'
+    WHEN age BETWEEN 25 AND 34 THEN '25–34'
+    WHEN age BETWEEN 35 AND 44 THEN '35–44'
+    WHEN age BETWEEN 45 AND 54 THEN '45–54'
+    WHEN age BETWEEN 55 AND 64 THEN '55–64'
+    ELSE '65+'
+  END AS age_band,
+  COUNT(*) AS customers,
+  ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 2) AS pct_of_total
+FROM base
+GROUP BY 1
+ORDER BY
+  CASE age_band
+    WHEN '<18' THEN 0
+    WHEN '18–24' THEN 1
+    WHEN '25–34' THEN 2
+    WHEN '35–44' THEN 3
+    WHEN '45–54' THEN 4
+    WHEN '55–64' THEN 5
+    ELSE 6
+  END;
+-- What is the correlation between Monthly Income and Number of Trips made?
+SELECT
+    corr(monthly_income, number_of_trips) AS corr_income_trips
+FROM tourism_db.tourism_clean
+WHERE monthly_income IS NOT NULL
+  AND number_of_trips IS NOT NULL;
+  -- Which occupation type tends to have the highest pitch satisfaction scores?
+  SELECT
+    occupation,
+    ROUND(AVG(pitch_satisfaction_score), 2) AS avg_pitch_score,
+    COUNT(*) AS total_customers
+FROM tourism_db.tourism_clean
+WHERE pitch_satisfaction_score IS NOT NULL
+GROUP BY occupation
+HAVING COUNT(*) > 5       -- filters out small groups
+ORDER BY avg_pitch_score DESC;
+--Can you segment customers based on their demographics and travel preferences?
+SELECT
+  Gender,
+  MaritalStatus,
+  Occupation,
+  CityTier,
+  AVG(TRY_CAST(Age AS DOUBLE)) AS avg_age,
+  AVG(TRY_CAST(NumberOfTrips AS DOUBLE)) AS avg_trips,
+  AVG(TRY_CAST(MonthlyIncome AS DOUBLE)) AS avg_income
+FROM tourism_db.tourism_data
+GROUP BY Gender, MaritalStatus, Occupation, CityTier
+ORDER BY avg_income DESC;
+
+WITH base AS (
+  SELECT
+    TRY_CAST(Age AS INT) AS age,
+    Gender,
+    MaritalStatus,
+    Occupation,
+    TRY_CAST(CityTier AS INT) AS city_tier,
+    TRY_CAST(NumberOfTrips AS INT) AS trips,
+    TRY_CAST(MonthlyIncome AS DOUBLE) AS income,
+    TRY_CAST(PitchSatisfactionScore AS INT) AS satisfaction,
+    TRY_CAST(ProdTaken AS INT) AS purchased
+  FROM tourism_db.tourism_data
+)
+SELECT
+  CASE
+    WHEN age BETWEEN 18 AND 30 AND income < 40000 THEN 'Young Budget Travelers'
+    WHEN age BETWEEN 18 AND 30 AND income >= 40000 THEN 'Young Professionals'
+    WHEN age BETWEEN 31 AND 45 AND trips >= 3 THEN 'Frequent Family Travelers'
+    WHEN age BETWEEN 31 AND 45 AND trips < 3 THEN 'Working Parents'
+    WHEN age > 45 AND income >= 60000 THEN 'Affluent Mature Travelers'
+    ELSE 'Casual Explorers'
+  END AS customer_segment,
+  COUNT(*) AS n_customers,
+  ROUND(AVG(trips), 2) AS avg_trips,
+  ROUND(AVG(income), 2) AS avg_income,
+  ROUND(AVG(satisfaction), 2) AS avg_satisfaction
+FROM base
+GROUP BY 1
+ORDER BY n_customers DESC;
+
+SELECT
+  CASE
+    WHEN TRY_CAST(NumberOfTrips AS INT) <= 1 THEN 'Infrequent Travelers'
+    WHEN TRY_CAST(NumberOfTrips AS INT) BETWEEN 2 AND 3 THEN 'Moderate Travelers'
+    WHEN TRY_CAST(NumberOfTrips AS INT) >= 4 THEN 'Frequent Travelers'
+    ELSE 'Non-Travelers'
+  END AS travel_segment,
+  ROUND(AVG(TRY_CAST(Age AS DOUBLE)), 1) AS avg_age,
+  ROUND(AVG(TRY_CAST(MonthlyIncome AS DOUBLE)), 1) AS avg_income,
+  ROUND(AVG(TRY_CAST(PitchSatisfactionScore AS DOUBLE)), 2) AS avg_satisfaction,
+  COUNT(*) AS n_customers
+FROM tourism_db.tourism_data
+GROUP BY 1
+ORDER BY n_customers DESC;
+--Which segment of customers is most likely to purchase a product after a pitch?
+--Occupation--
+SELECT
+  occupation,
+  COUNT(*) AS customers,
+  ROUND(AVG(CAST(prod_taken AS DOUBLE)) * 100, 2) AS conversion_pct
+FROM tourism_db.tourism_clean
+GROUP BY occupation
+HAVING COUNT(*) >= 20              -- adjust sample-size floor
+ORDER BY conversion_pct DESC, customers DESC
+LIMIT 10;
+--Age Band--
+WITH base AS (
+  SELECT age, prod_taken
+  FROM tourism_db.tourism_clean
+  WHERE age IS NOT NULL
+)
+SELECT
+  CASE
+    WHEN age < 18 THEN '<18'
+    WHEN age BETWEEN 18 AND 24 THEN '18–24'
+    WHEN age BETWEEN 25 AND 34 THEN '25–34'
+    WHEN age BETWEEN 35 AND 44 THEN '35–44'
+    WHEN age BETWEEN 45 AND 54 THEN '45–54'
+    WHEN age BETWEEN 55 AND 64 THEN '55–64'
+    ELSE '65+'
+  END AS age_band,
+  COUNT(*) AS customers,
+  ROUND(AVG(CAST(prod_taken AS DOUBLE)) * 100, 2) AS conversion_pct
+FROM base
+GROUP BY 1
+HAVING COUNT(*) >= 20
+ORDER BY conversion_pct DESC;
+--Product Pitched --
+SELECT
+  product_pitched,
+  COUNT(*) AS customers,
+  ROUND(AVG(CAST(prod_taken AS DOUBLE)) * 100, 2) AS conversion_pct
+FROM tourism_db.tourism_clean
+GROUP BY product_pitched
+HAVING COUNT(*) >= 20
+ORDER BY conversion_pct DESC;
+--Engagement Signal--
+WITH b AS (
+  SELECT
+    prod_taken,
+    CASE
+      WHEN number_of_followups IS NULL THEN 'Unknown'
+      WHEN number_of_followups = 0 THEN '0'
+      WHEN number_of_followups BETWEEN 1 AND 2 THEN '1–2'
+      WHEN number_of_followups BETWEEN 3 AND 4 THEN '3–4'
+      ELSE '5+'
+    END AS followups_band
+  FROM tourism_db.tourism_clean
+)
+SELECT
+  followups_band,
+  COUNT(*) AS customers,
+  ROUND(AVG(CAST(prod_taken AS DOUBLE)) * 100, 2) AS conversion_pct
+FROM b
+GROUP BY followups_band
+ORDER BY
+  CASE followups_band
+    WHEN 'Unknown' THEN 0
+    WHEN '0' THEN 1
+    WHEN '1–2' THEN 2
+    WHEN '3–4' THEN 3
+    ELSE 4
+  END;
+  --Combo Segment --
+  SELECT
+  occupation,
+  product_pitched,
+  COUNT(*) AS customers,
+  ROUND(AVG(CAST(prod_taken AS DOUBLE)) * 100, 2) AS conversion_pct
+FROM tourism_db.tourism_clean
+GROUP BY occupation, product_pitched
+HAVING COUNT(*) >= 15
+ORDER BY conversion_pct DESC, customers DESC
+LIMIT 15;
+--Top Segment per product --
+WITH seg AS (
+  SELECT
+    product_pitched,
+    occupation,
+    COUNT(*) AS customers,
+    AVG(CAST(prod_taken AS DOUBLE)) AS conv
+  FROM tourism_db.tourism_clean
+  GROUP BY product_pitched, occupation
+  HAVING COUNT(*) >= 15
+),
+ranked AS (
+  SELECT *,
+         ROW_NUMBER() OVER (PARTITION BY product_pitched ORDER BY conv DESC, customers DESC) AS rn
+  FROM seg
+)
+SELECT
+  product_pitched,
+  occupation,
+  customers,
+  ROUND(conv * 100, 2) AS conversion_pct
+FROM ranked
+WHERE rn = 1
+ORDER BY conversion_pct DESC;
+--How does monthly income influence product choice among different occupations?
+--Relationship Overview--
+SELECT
+    Occupation,
+    ProductPitched,
+    ROUND(AVG(TRY_CAST(MonthlyIncome AS DOUBLE)), 2) AS avg_income,
+    COUNT(*) AS customers,
+    ROUND(AVG(CAST(TRY_CAST(ProdTaken AS INTEGER) AS DOUBLE)) * 100, 2) AS conversion_pct
+FROM tourism_db.tourism_data
+WHERE TRY_CAST(MonthlyIncome AS DOUBLE) IS NOT NULL
+GROUP BY Occupation, ProductPitched
+HAVING COUNT(*) >= 5
+ORDER BY avg_income DESC, conversion_pct DESC;
+--income distribution shifts by product--
+WITH base AS (
+  SELECT
+    ProductPitched,
+    Occupation,
+    TRY_CAST(MonthlyIncome AS DOUBLE) AS income
+  FROM tourism_db.tourism_data
+  WHERE TRY_CAST(MonthlyIncome AS DOUBLE) IS NOT NULL
+)
+SELECT
+  ProductPitched,
+  CASE
+    WHEN income < 25000 THEN '<25K'
+    WHEN income BETWEEN 25000 AND 49999 THEN '25K–49K'
+    WHEN income BETWEEN 50000 AND 74999 THEN '50K–74K'
+    WHEN income BETWEEN 75000 AND 99999 THEN '75K–99K'
+    ELSE '100K+'
+  END AS income_band,
+  COUNT(*) AS customers,
+  ROUND(
+    100.0 * COUNT(*) / SUM(COUNT(*)) OVER (PARTITION BY ProductPitched),
+    2
+  ) AS pct_within_product
+FROM base
+GROUP BY
+  ProductPitched,
+  CASE
+    WHEN income < 25000 THEN '<25K'
+    WHEN income BETWEEN 25000 AND 49999 THEN '25K–49K'
+    WHEN income BETWEEN 50000 AND 74999 THEN '50K–74K'
+    WHEN income BETWEEN 75000 AND 99999 THEN '75K–99K'
+    ELSE '100K+'
+  END
+ORDER BY 1, 2;
+--Which type of contact (Self Enquiry vs. Company Invited) results in a higher conversion rate?
+WITH cleaned AS (
+  SELECT
+    lower(trim(regexp_replace(TypeofContact, '[^A-Za-z ]', ''))) AS contact_type,
+    TRY_CAST(ProdTaken AS INTEGER) AS prod_taken
+  FROM tourism_db.tourism_data
+)
+SELECT
+  CASE contact_type
+    WHEN 'self enquiry'     THEN 'Self Enquiry'
+    WHEN 'company invited'  THEN 'Company Invited'
+  END AS TypeofContact,
+  COUNT(*) AS total_customers,
+  SUM(CASE WHEN prod_taken = 1 THEN 1 ELSE 0 END) AS total_purchased,
+  ROUND(100.0 * SUM(CASE WHEN prod_taken = 1 THEN 1 ELSE 0 END) / COUNT(*), 2) AS conversion_rate_pct
+FROM cleaned
+WHERE contact_type IN ('self enquiry', 'company invited')
+GROUP BY 1
+ORDER BY conversion_rate_pct DESC;
+--How do different city tiers contribute to sales? Is there a specific city tier that the company should focus on?
+SELECT
+    TRY_CAST(CityTier AS INTEGER) AS city_tier,
+    COUNT(*) AS total_customers,
+    SUM(CASE WHEN TRY_CAST(ProdTaken AS INTEGER) = 1 THEN 1 ELSE 0 END) AS total_sales,
+    ROUND(
+        100.0 * SUM(CASE WHEN TRY_CAST(ProdTaken AS INTEGER) = 1 THEN 1 ELSE 0 END) / COUNT(*),
+        2
+    ) AS conversion_rate_pct,
+    ROUND(
+        100.0 * SUM(CASE WHEN TRY_CAST(ProdTaken AS INTEGER) = 1 THEN 1 ELSE 0 END) /
+        SUM(SUM(CASE WHEN TRY_CAST(ProdTaken AS INTEGER) = 1 THEN 1 ELSE 0 END)) OVER (),
+        2
+    ) AS sales_share_pct
+FROM tourism_db.tourism_data
+WHERE TRY_CAST(CityTier AS INTEGER) IS NOT NULL
+GROUP BY TRY_CAST(CityTier AS INTEGER)
+ORDER BY city_tier;
+--Among customers who prefer higher-star properties, how does the type of product pitched and number of follow-ups influence the decision to purchase?
+WITH high_star AS (
+  SELECT
+      ProductPitched,
+      TRY_CAST(NumberOfFollowups AS INT) AS followups,
+      TRY_CAST(ProdTaken AS INT) AS purchased,
+      TRY_CAST(PreferredPropertyStar AS INT) AS star_pref
+  FROM tourism_db.tourism_data
+  WHERE TRY_CAST(PreferredPropertyStar AS INT) >= 4
+)
+SELECT
+    ProductPitched,
+    CASE
+        WHEN followups IS NULL THEN 'No Data'
+        WHEN followups = 0 THEN '0'
+        WHEN followups BETWEEN 1 AND 2 THEN '1–2'
+        WHEN followups BETWEEN 3 AND 4 THEN '3–4'
+        ELSE '5+'
+    END AS followup_band,
+    COUNT(*) AS total_customers,
+    SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END) AS total_purchases,
+    ROUND(100.0 * SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END) / COUNT(*), 2) AS conversion_rate_pct
+FROM high_star
+GROUP BY ProductPitched,
+         CASE
+            WHEN followups IS NULL THEN 'No Data'
+            WHEN followups = 0 THEN '0'
+            WHEN followups BETWEEN 1 AND 2 THEN '1–2'
+            WHEN followups BETWEEN 3 AND 4 THEN '3–4'
+            ELSE '5+'
+         END
+ORDER BY ProductPitched, followup_band;
+--Income and Satisfaction--
+SELECT
+    ProductPitched,
+    ROUND(AVG(TRY_CAST(MonthlyIncome AS DOUBLE)), 0) AS avg_income,
+    ROUND(AVG(TRY_CAST(PitchSatisfactionScore AS DOUBLE)), 2) AS avg_satisfaction,
+    ROUND(AVG(TRY_CAST(NumberOfFollowups AS DOUBLE)), 1) AS avg_followups,
+    ROUND(AVG(TRY_CAST(ProdTaken AS DOUBLE)) * 100, 2) AS conversion_rate_pct
+FROM tourism_db.tourism_data
+WHERE TRY_CAST(PreferredPropertyStar AS INT) >= 4
+GROUP BY ProductPitched
+ORDER BY conversion_rate_pct DESC;
+--What’s the optimal number of follow-ups to maximize conversions without wasting effort — and does it differ by Type of Contact (Self Enquiry vs Company Invited)?
+WITH base AS (
+  SELECT
+    TRY_CAST(NumberOfFollowups AS INT) AS fups,
+    TRY_CAST(ProdTaken AS INT)         AS purchased
+  FROM tourism_db.tourism_data
+  WHERE NumberOfFollowups IS NOT NULL
+)
+SELECT
+  fups AS followups,
+  COUNT(*) AS customers,
+  SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END) AS sales,
+  ROUND(100.0 * SUM(CASE WHEN purchased = 1 THEN 1 ELSE 0 END)/COUNT(*), 2) AS conversion_pct
+FROM base
+GROUP BY fups
+ORDER BY followups;
+--Marginal Lift --
+WITH agg AS (
+  SELECT
+    TRY_CAST(NumberOfFollowups AS INT) AS fups,
+    COUNT(*) AS customers,
+    SUM(CASE WHEN TRY_CAST(ProdTaken AS INT)=1 THEN 1 ELSE 0 END) AS sales
+  FROM tourism_db.tourism_data
+  WHERE NumberOfFollowups IS NOT NULL
+  GROUP BY TRY_CAST(NumberOfFollowups AS INT)
+),
+metrics AS (
+  SELECT
+    fups,
+    customers,
+    sales,
+    1.0 * sales / customers                      AS conv_rate,
+    LAG(1.0 * sales / customers) OVER (ORDER BY fups) AS prev_conv_rate
+  FROM agg
+)
+SELECT
+  fups AS followups,
+  ROUND(100*conv_rate,2) AS conversion_pct,
+  ROUND(100*(conv_rate - COALESCE(prev_conv_rate,0)), 2) AS marginal_lift_pct_points,
+  -- approximate effort efficiency: expected contacts attempted per sale at this cadence
+  ROUND( (fups+1) / NULLIF(sales * 1.0 / customers, 0), 2) AS contacts_per_sale_est
+FROM metrics
+ORDER BY followups;
+--Self-Enquiry vs Company Invited cadences--
+WITH cleaned AS (
+  SELECT
+    lower(trim(regexp_replace(TypeofContact, '[^A-Za-z ]', ''))) AS contact_type,
+    TRY_CAST(NumberOfFollowups AS INT) AS fups,
+    TRY_CAST(ProdTaken AS INT)         AS purchased
+  FROM tourism_db.tourism_data
+  WHERE TypeofContact IS NOT NULL
+),
+agg AS (
+  SELECT
+    CASE contact_type
+      WHEN 'self enquiry' THEN 'Self Enquiry'
+      WHEN 'company invited' THEN 'Company Invited'
+      ELSE 'Other/Unknown'
+    END AS contact_type,
+    fups,
+    COUNT(*) AS customers,
+    SUM(CASE WHEN purchased=1 THEN 1 ELSE 0 END) AS sales
+  FROM cleaned
+  WHERE contact_type IN ('self enquiry','company invited')
+  GROUP BY 1, fups
+)
+SELECT
+  contact_type,
+  fups AS followups,
+  customers,
+  sales,
+  ROUND(100.0 * sales / customers, 2) AS conversion_pct
+FROM agg
+ORDER BY contact_type, followups;
+--Executive Summary--
+WITH base AS (
+  SELECT
+    CASE
+      WHEN TRY_CAST(NumberOfFollowups AS INT) IS NULL THEN 'No Data'
+      WHEN TRY_CAST(NumberOfFollowups AS INT) = 0 THEN '0'
+      WHEN TRY_CAST(NumberOfFollowups AS INT) BETWEEN 1 AND 2 THEN '1–2'
+      WHEN TRY_CAST(NumberOfFollowups AS INT) BETWEEN 3 AND 4 THEN '3–4'
+      ELSE '5+'
+    END AS followup_band,
+    lower(trim(regexp_replace(TypeofContact, '[^A-Za-z ]', ''))) AS contact_type,
+    TRY_CAST(ProdTaken AS INT) AS purchased
+  FROM tourism_db.tourism_data
+)
+SELECT
+  CASE contact_type
+    WHEN 'self enquiry' THEN 'Self Enquiry'
+    WHEN 'company invited' THEN 'Company Invited'
+    ELSE 'Other/Unknown'
+  END AS contact_type,
+  followup_band,
+  COUNT(*) AS customers,
+  SUM(CASE WHEN purchased=1 THEN 1 ELSE 0 END) AS sales,
+  ROUND(100.0 * SUM(CASE WHEN purchased=1 THEN 1 ELSE 0 END)/COUNT(*), 2) AS conversion_pct
+FROM base
+WHERE contact_type IN ('self enquiry','company invited')
+GROUP BY 1, followup_band
+ORDER BY contact_type,
+         CASE followup_band
+           WHEN 'No Data' THEN 0
+           WHEN '0' THEN 1
+           WHEN '1–2' THEN 2
+           WHEN '3–4' THEN 3
+           ELSE 4
+         END;
